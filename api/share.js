@@ -126,6 +126,12 @@ export default async function handler(req, res) {
       subject: `Shared note: ${note.title || 'untitled'}`,
       html: renderEmail(note),
       text: renderText(note),
+      // Tag the outbound email so the webhook can correlate events back to
+      // this note. The custom header is for human/debug visibility; the
+      // 'sent' row we insert below is what the webhook actually joins on
+      // via message_id.
+      headers: { 'X-Note-Id': noteId },
+      tags: [{ name: 'note_id', value: noteId }],
     }),
   });
 
@@ -137,5 +143,29 @@ export default async function handler(req, res) {
     });
   }
 
-  return res.status(200).json({ ok: true, id: resendBody.id });
+  // Record the 'sent' event. Failures here shouldn't fail the send — the
+  // email already left — but we surface them in the response for debugging.
+  let activityWarning = null;
+  if (resendBody?.id) {
+    const eventResp = await fetch(`${supabaseUrl}/rest/v1/email_events`, {
+      method: 'POST',
+      headers: {
+        apikey: supabaseKey,
+        Authorization: `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({
+        message_id: resendBody.id,
+        note_id: noteId,
+        recipient: email,
+        event_type: 'sent',
+      }),
+    });
+    if (!eventResp.ok) {
+      activityWarning = `failed to log sent event: HTTP ${eventResp.status}`;
+    }
+  }
+
+  return res.status(200).json({ ok: true, id: resendBody.id, warning: activityWarning });
 }
